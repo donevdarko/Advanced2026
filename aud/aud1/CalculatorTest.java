@@ -1,4 +1,4 @@
-package aud;
+package aud.aud1;
 
 import java.util.Scanner;
 class Calculator {
