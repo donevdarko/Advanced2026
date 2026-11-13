@@ -11,96 +11,118 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
-// ===================== Part A: your classes =====================
-//
-// Write ValidationResult, Validator, User and UserValidation here.
-
-final class ValidationResult {
-    private static final ValidationResult OK = new ValidationResult(Collections.emptyList());
-
+final class ValidationResult{
     private final List<String> errors;
 
     private ValidationResult(List<String> errors) {
-        this.errors = Collections.unmodifiableList(new ArrayList<>(errors));
+        this.errors = errors;
     }
 
-    public static ValidationResult ok() {
-        return OK;
+    public static ValidationResult ok(){
+        return new ValidationResult(List.of());
     }
 
-    public static ValidationResult error(String message) {
-        if (message == null || message.isEmpty()) {
-            throw new IllegalArgumentException("message must not be null or empty");
-        }
-        return new ValidationResult(Collections.singletonList(message));
+    public static ValidationResult error(String message){
+        if(message == null || message.isEmpty()) throw new IllegalArgumentException();
+        return new ValidationResult(List.of(message));
     }
 
-    public static ValidationResult of(List<String> errors) {
-        if (errors == null) {
-            throw new IllegalArgumentException("errors must not be null");
-        }
-        return new ValidationResult(errors);
+    public static ValidationResult of(List<String> errors){
+        if(errors == null) throw new IllegalArgumentException();
+        return new ValidationResult(List.copyOf(errors));
     }
 
-    public boolean isValid() {
-        return errors.isEmpty();
+    public boolean isValid(){
+        return(errors.isEmpty());
     }
 
-    public List<String> getErrors() {
+    public List<String> getErrors(){
         return errors;
     }
+
 }
 
 @FunctionalInterface
-interface Validator<T> {
+interface Validator<T>{
     ValidationResult validate(T value);
 
-    default Validator<T> and(Validator<? super T> other) {
-        if (other == null) {
-            throw new IllegalArgumentException("other must not be null");
-        }
-        return value -> {
-            ValidationResult first = this.validate(value);
-            if (!first.isValid()) {
-                return first;
+    static <T, F> Validator<T> field(
+            String name,
+            Function<? super T, ? extends F> getter,
+            Validator<? super F> validator
+    ){
+        if(name == null || getter == null || validator == null) throw new IllegalArgumentException();
+
+        return object -> {
+            F part = getter.apply(object);
+            ValidationResult result = validator.validate(part);
+            if(result.isValid()) return result;
+            ArrayList<String> erors = new ArrayList<>();
+            for (String er : result.getErrors()){
+                erors.add(String.format("%s: %s", name, er));
             }
+            return ValidationResult.of(erors);
+        };
+
+    }
+
+    static <T> Validator<T> allOf(
+            List<? extends Validator<? super T>> validators
+    ){
+        if (validators == null) throw new IllegalArgumentException();
+        for (Validator<? super T> v : validators) {
+            if (v == null) throw new IllegalArgumentException();
+        }
+        if (validators.isEmpty()) return value -> ValidationResult.ok();
+        List<? extends Validator<? super T>> vals = List.copyOf(validators);
+        return value -> {
+            List<String> errs = new ArrayList<>();
+            for (Validator<? super T> val : vals){
+                ValidationResult res = val.validate(value);
+                for (String s : res.getErrors()){
+                    errs.add(s);
+                }
+            }
+            return ValidationResult.of(errs);
+        };
+    }
+
+    default Validator<T> and(Validator<? super T> other){
+        if(other == null) throw new IllegalArgumentException();
+        return value -> {
+            ValidationResult firstResult = validate(value);
+            if (!firstResult.isValid()) return firstResult;
             return other.validate(value);
         };
     }
 
-    static <T> Validator<T> notNull() {
-        return value -> value == null
-                ? ValidationResult.error("must not be null")
-                : ValidationResult.ok();
+    static <T> Validator<T> notNull(){
+        return value -> (value == null) ? ValidationResult.error("must not be null") : ValidationResult.ok();
     }
 
-    static Validator<String> minLength(int min) {
-        if (min < 0) {
-            throw new IllegalArgumentException("min must not be negative");
-        }
+    static Validator<String> minLength(int min){
+        if(min<0) throw new IllegalArgumentException();
         return value -> {
             if (value == null) return ValidationResult.error("must not be null");
-            if (value.length() < min) return ValidationResult.error("must have at least " + min + " characters");
+            if (value.length()<min) return ValidationResult.error(String.format("must have at least %d characters", min));
             return ValidationResult.ok();
         };
     }
 
-    static Validator<Integer> range(int min, int max) {
-        if (min > max) {
-            throw new IllegalArgumentException("min must not be greater than max");
-        }
+    static Validator<Integer> range(int min, int max){
+        if(min>max) throw new IllegalArgumentException();
         return value -> {
             if (value == null) return ValidationResult.error("must not be null");
-            if (value < min || value > max) return ValidationResult.error("must be between " + min + " and " + max);
+            if (value<min || value>max) return ValidationResult.error(String.format("must be between %d and %d", min, max));
             return ValidationResult.ok();
         };
     }
 }
 
-class User {
-    private final String name;
-    private final Integer age;
-    private final String email;
+class User{
+    private String name;
+    private Integer age;
+    private String email;
 
     public User(String name, Integer age, String email) {
         this.name = name;
@@ -121,35 +143,49 @@ class User {
     }
 }
 
-class UserValidation {
+class UserValidation{
+
     private static final Validator<String> NAME = Validator.<String>notNull()
-            .and(Validator.minLength(3));
+            .and(Validator.<String>minLength(3));
 
     private static final Validator<Integer> AGE = Validator.<Integer>notNull()
             .and(Validator.range(18, 120));
 
     private static final Validator<String> EMAIL = Validator.<String>notNull()
-            .and(Validator.minLength(5))
-            .and(s -> s.contains("@") ? ValidationResult.ok() : ValidationResult.error("must contain @"));
+            .and(Validator.minLength(5)
+                    .and(s -> s.contains("@") ? ValidationResult.ok() : ValidationResult.error("must contain @")));
 
     public static ValidationResult validate(User user) {
         if (user == null) {
             throw new IllegalArgumentException("user must not be null");
         }
         List<String> errors = new ArrayList<>();
-        collect(errors, "name", NAME, user.getName());
-        collect(errors, "age", AGE, user.getAge());
-        collect(errors, "email", EMAIL, user.getEmail());
+
+        ValidationResult nameResult = NAME.validate(user.getName());
+        if (!nameResult.isValid()) errors.add("name: " + nameResult.getErrors().get(0));
+
+        ValidationResult ageResult = AGE.validate(user.getAge());
+        if (!ageResult.isValid()) errors.add("age: " + ageResult.getErrors().get(0));
+
+        ValidationResult emailResult = EMAIL.validate(user.getEmail());
+        if (!emailResult.isValid()) errors.add("email: " + emailResult.getErrors().get(0));
+
         return ValidationResult.of(errors);
     }
 
-    private static <T> void collect(List<String> errors, String field, Validator<T> validator, T value) {
-        for (String e : validator.validate(value).getErrors()) {
-            errors.add(field + ": " + e);
-        }
+    public static Validator<User> userValidator(){
+        Validator<User> byName = Validator.field("name", User::getName, NAME);
+        Validator<User> byAge = Validator.field("age", User::getAge, AGE);
+        Validator<User> byEmail = Validator.field("email", User::getEmail, EMAIL);
+        return Validator.allOf(List.of(byName, byAge, byEmail));
     }
 }
 
+
+// ===================== Part B: new code =====================
+//
+// Add the static methods field and allOf to the Validator interface above,
+// and the method userValidator to the UserValidation class above.
 
 
 
@@ -301,6 +337,101 @@ public class Lab2 {
                 UserValidation.validate(null);
                 System.out.println("No exception");
                 break;
+            // ---------------- Part B ----------------
+            case "USER2":
+                System.out.println(show(UserValidation.userValidator().validate(new User(strValue(p[1]), intValue(p[2]), strValue(p[3])))));
+                break;
+            case "USER_SAME": {
+                User u = new User(strValue(p[1]), intValue(p[2]), strValue(p[3]));
+                ValidationResult a = UserValidation.validate(u);
+                ValidationResult b = UserValidation.userValidator().validate(u);
+                System.out.println("Same: " + (a.isValid() == b.isValid() && a.getErrors().equals(b.getErrors())));
+                break;
+            }
+            //   FIELD_LENGTH <label> <intval> <text>   Validator.field(label, String::length, intValidator).validate(text)
+            case "FIELD_LENGTH": {
+                if (missing(p[2])) break;
+                Validator<Integer> iv = (Validator<Integer>) vals.get(p[2]);
+                Validator<String> fv = Validator.<String, Integer>field(p[1], String::length, iv);
+                System.out.println(show(fv.validate(p[3])));
+                break;
+            }
+            //   FIELD_OBJ: the same, but the getter is a Function<Object, Integer>
+            case "FIELD_OBJ": {
+                if (missing(p[2])) break;
+                Validator<Integer> iv = (Validator<Integer>) vals.get(p[2]);
+                Function<Object, Integer> getter = o -> o.toString().length();       // Function<Object, ...> where Function<? super String, ...> is expected
+                Validator<String> fv = Validator.<String, Integer>field(p[1], getter, iv);
+                System.out.println(show(fv.validate(p[3])));
+                break;
+            }
+            //   FIELD_OBJVAL: the same, but the validator is a Validator<Object>
+            case "FIELD_OBJVAL": {
+                Validator<String> fv = Validator.<String, Integer>field(p[1], String::length, Validator.<Object>notNull());
+                System.out.println(show(fv.validate(p[2])));
+                break;
+            }
+            //   FIELD_DEF <newName> <label> <strValidator>   defines newName = Validator.field(label, s -> s, strValidator)
+            case "FIELD_DEF": {
+                if (missing(p[3])) break;
+                Validator<String> inner = (Validator<String>) vals.get(p[3]);
+                vals.put(p[1], Validator.<String, String>field(p[2], s -> s, inner));
+                types.put(p[1], "STR");
+                System.out.println("Defined " + p[1] + " (STR)");
+                break;
+            }
+            //   FIELD_NULL <NAME|GETTER|VALIDATOR>   Validator.field(...) with one null argument (needs an INT validator named R)
+            case "FIELD_NULL": {
+                if (missing("R")) break;
+                Validator<Integer> iv = (Validator<Integer>) vals.get("R");
+                switch (p[1]) {
+                    case "NAME": Validator.<String, Integer>field(null, String::length, iv); break;
+                    case "GETTER": Validator.<String, Integer>field("x", null, iv); break;
+                    default: Validator.<String, Integer>field("x", String::length, null);
+                }
+                System.out.println("No exception");
+                break;
+            }
+            //   ALLOF <name> STR <v1,v2,...|->   Validator.allOf(list of existing STR validators; OBJNOTNULL = Validator<Object>.notNull())
+            case "ALLOF": {
+                List<Validator<? super String>> list = new ArrayList<>();
+                if (!p[3].equals("-")) {
+                    for (String n : p[3].split(",")) {
+                        if (n.equals("OBJNOTNULL")) {
+                            list.add(Validator.<Object>notNull());
+                        } else {
+                            list.add((Validator<String>) vals.get(n));
+                        }
+                    }
+                }
+                vals.put(p[1], Validator.<String>allOf(list));
+                types.put(p[1], "STR");
+                System.out.println("Defined " + p[1] + " (STR)");
+                break;
+            }
+            case "ALLOF_NULL":
+                Validator.<String>allOf(null);
+                System.out.println("No exception");
+                break;
+            //   ALLOF_NULL_ELEM <name>   allOf(list containing the validator and a null element)
+            case "ALLOF_NULL_ELEM": {
+                List<Validator<String>> list = new ArrayList<>();
+                list.add((Validator<String>) vals.get(p[1]));
+                list.add(null);
+                Validator.<String>allOf(list);
+                System.out.println("No exception");
+                break;
+            }
+            //   ALLOF_COPY <v1,v2,...> <value>   builds allOf(list), then changes the list, then validates the value
+            case "ALLOF_COPY": {
+                List<Validator<String>> list = new ArrayList<>();
+                for (String n : p[1].split(",")) list.add((Validator<String>) vals.get(n));
+                Validator<String> v = Validator.<String>allOf(list);
+                list.clear();
+                list.add(Validator.<String>notNull());
+                System.out.println(show(v.validate(strValue(p[2]))));
+                break;
+            }
             default:
                 System.out.println("Unknown command");
         }
